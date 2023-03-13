@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import tomli
+from pathlib import Path
 
 import pyperclip
 import appdirs
@@ -37,18 +38,18 @@ import appdirs
 FIELD_SEP = b"\t"
 RECORD_SEP = b"\x00"
 
-CACHE_DIR = os.path.join(appdirs.user_cache_dir(), "finddoc")
-os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_DIR = Path(appdirs.user_cache_dir()) / 'finddoc'
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 IGNORE_RE = re.compile("\.(bkp|dtmp|part)$", re.IGNORECASE)
+
 
 def find_totalcmd():
     for env in ('ProgramFiles', 'ProgramFiles(x86)'):
         if program_files := os.environ.get(env):
             for exe in 'totalcmd64.exe', 'totalcmd.exe':
-                path = os.path.join(
-                    program_files, 'totalcmd', 'totalcmd64.exe')
-                if os.path.exists(path):
+                path = Path(program_files) / 'totalcmd' / exe
+                if path.exists():
                     return path
 
 
@@ -64,19 +65,19 @@ def sanitize_text(text):
     return text
 
 
-def make_thread(target, args):
+def start_thread(target, args):
     """Create and start a thread"""
     thread = threading.Thread(target=target, args=args)
     thread.start()
     return thread
 
 
-def parwalk(base):
+def parellel_walk(base):
     """Multithreaded version of os.walk"""
-    jobs_created = [0]
-    jobs_completed = [0]
+    jobs_created = 0
 
     def worker(jobs: queue.Queue, results: queue.Queue):
+        nonlocal jobs_created
         while jobbase := jobs.get():
             dirs = []
             nondirs = []
@@ -84,8 +85,8 @@ def parwalk(base):
                 for entry in os.scandir(jobbase):
                     if entry.is_dir():
                         dirs.append(entry.name)
-                        jobs_created[0] += 1
-                        jobs.put(os.path.join(jobbase, entry.name))
+                        jobs_created += 1
+                        jobs.put(jobbase / entry.name)
                     else:
                         nondirs.append(entry.name)
                 results.put((jobbase, dirs, nondirs))
@@ -95,17 +96,22 @@ def parwalk(base):
     jobqueue = queue.Queue()
     resultqueue = queue.Queue()
     threads = [
-        make_thread(worker, (jobqueue, resultqueue)) for _ in range(os.cpu_count())
+        start_thread(worker, (jobqueue, resultqueue)) for _ in range(os.cpu_count())
     ]
 
-    jobs_created = [1]
-    jobqueue.put(base)
-    while jobs_completed[0] < jobs_created[0]:
+    # start the job for the root
+    jobs_created += 1
+    jobqueue.put(Path(base))
+
+    # wait for jobs to complete
+    jobs_completed = 0
+    while jobs_completed < jobs_created:
         result = resultqueue.get()
         if result:
             yield result
-        jobs_completed[0] += 1
+        jobs_completed += 1
 
+    # stop worker threads
     for _ in threads:
         jobqueue.put(None)
     for thread in threads:
@@ -114,12 +120,14 @@ def parwalk(base):
 
 def walk(base, dst, alt_dst=None):
     """Walk directory and write paths to dst (and optionally alt_dst)"""
-    for root, _dirs, files in parwalk(base):
+    for root, _dirs, files in parellel_walk(base):
+        root = Path(root)
         for file in files:
-            fullpath = os.path.join(root, file)
-            if IGNORE_RE.search(fullpath):
+            fullpath = root / file
+            str_path = str(fullpath)
+            if IGNORE_RE.search(str_path):
                 continue
-            block = fullpath.encode() + RECORD_SEP
+            block = str_path.encode() + RECORD_SEP
             dst.write(block)
             if alt_dst:
                 alt_dst.write(block)
@@ -132,33 +140,40 @@ def parse_path(path):
     return path
 
 
-def scan(root):
+def rescan(root):
     digest = hashlib.sha256(root.encode()).hexdigest()
-    list_path = os.path.join(CACHE_DIR, digest)
-    part_path = list_path + ".part"
-    with open(part_path, "wb") as outfile:
+    list_path = CACHE_DIR / digest
+    part_path = str(list_path) + '.part'
+    with open(part_path, 'wb') as outfile:
         walk(root, outfile)
     os.replace(part_path, list_path)
 
 
-def start_thread(root):
-    return make_thread(scan, (root,))
-
-
 def update():
-    threads = [start_thread(root) for root in roots]
+    threads = [start_thread(rescan, (root,)) for root in roots]
     for thread in threads:
         thread.join()
 
 
-def tee(infile, outfile1, outfile2):
-    while data := infile.read(65536):
-        outfile1.write(data)
-        outfile2.write(data)
+def cached_walk(root, io):
+    """
+    Walk directory tree and write nul-separated paths to `io`. Caches result in
+    `CACHE_DIR`.
+    """
+    digest = hashlib.sha256(root.encode()).hexdigest()
+    cache_path = CACHE_DIR / digest
+    try:
+        with open(cache_path, 'rb') as infile:
+            shutil.copyfileobj(infile, io)
+    except FileNotFoundError:
+        part = str(cache_path) + '.part'
+        with open(part, 'wb') as part_fileout:
+            walk(root, io, part_fileout)
+        os.replace(part, cache_path)
 
 
 def fzf(opts):
-    history_path = os.path.join(CACHE_DIR, 'history')
+    history_path = CACHE_DIR / 'history'
     fzf = shutil.which('fzf')
     if not fzf:
         print("fzf is needed and was not found path. Download from https://github.com/junegunn/fzf/releases")
@@ -168,6 +183,10 @@ def fzf(opts):
     if totalcmd_exe:
         expect = expect + ',alt-o'
 
+    header = "enter=open, alt-c=copy path, alt-e=show in explorer, ctrl+p/n=history, esc=abort"
+    if totalcmd_exe:
+        header += ", alt-o=show in totalcmd"
+
     command = [
         fzf,
         "--expect",
@@ -176,11 +195,11 @@ def fzf(opts):
         "--read0",
         "--with-nth=1",
         "--delimiter=@",
-        "--border",
+        # "--border",
         "--history",
         history_path,
         "--header",
-        "enter=open file, alt-c=copy, alt-e=goto, ctrl+p/n=history, esc=abort",
+        header,
         "--bind",
         "shift-up:preview-page-up,shift-down:preview-page-down",
     ]
@@ -192,24 +211,13 @@ def fzf(opts):
             "up,30%"
         ])
 
-    proc = subprocess.Popen(command,
-                            stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE,
-                            )
+    proc = subprocess.Popen(
+        command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     try:
         try:
             for root in roots:
-                digest = hashlib.sha256(root.encode()).hexdigest()
-                list_path = os.path.join(CACHE_DIR, digest)
-                if os.path.exists(list_path):
-                    with open(list_path, "rb") as infile:
-                        shutil.copyfileobj(infile, proc.stdin)
-                else:
-                    part_file = list_path + ".part"
-                    with open(part_file, "wb") as part_fileout:
-                        walk(root, proc.stdin, part_fileout)
-                    os.replace(part_file, list_path)
+                cached_walk(root, proc.stdin)
             proc.stdin.close()
         except (BrokenPipeError, OSError):
             pass
@@ -220,9 +228,7 @@ def fzf(opts):
             elif key == b"alt-c":
                 pyperclip.copy(path.decode())
             elif key == b"alt-e":
-                # print(f'explorer.exe /select,"{path.decode()}"')
-                # subprocess.call(("explorer.exe", f"/select,\"{path.decode()}\""))
-                os.system(f'cmd.exe /c explorer.exe /select,"{path.decode()}"')
+                os.system(f'explorer.exe /select,"{path.decode()}"')
             elif key == b"alt-o":
                 subprocess.call((totalcmd_exe, "/a", "/o", path.decode()))
 
