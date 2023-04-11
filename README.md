@@ -20,12 +20,39 @@ clipboard (<kbd>alt-c</kbd>), and going to the file in explorer
 C:\> finddoc.py
 ```
 
+### Shortcuts available when searching:
+
  * <kbd>ENTER</kbd> - open selected file (default associated program)
  * <kbd>alt-c</kbd> - copy full path to clipboard
  * <kbd>alt-e</kbd> - open Explorer with file selected
  * <kbd>alt-o</kbd> - open Total Commander with file selected
+ * <kbd>alt-u</kbd> - update document cache (rescan all locations)
  * <kbd>ctrl-p/ctrl-n</kbd> - navigate history
  * additional standard fzf shortcuts work too
+
+
+### Adding/removing directories
+
+To add a path:
+
+```bat
+finddoc add <PATH>
+```
+
+For example, to add current path:
+
+```bat
+C:\MyProjects\Documents> finddoc add .
+```
+
+And to remote path:
+
+```bat
+finddoc remove <PATH>
+```
+
+`finddoc.py` will expand and normalize the argument, so relative paths will be handled correctly.
+
 
 ### Configure directories
 
