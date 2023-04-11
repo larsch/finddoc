@@ -6,9 +6,14 @@ name = "pypi"
 [packages]
 pyperclip = "*"
 appdirs = "*"
+tqdm = "*"
+tomli = "*"
+tomli-w = "*"
 
 [dev-packages]
 ruff = "*"
+black = "*"
+yapf = "*"
 
 [requires]
 python_version = "3.10"
