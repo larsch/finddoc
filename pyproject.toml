@@ -1,2 +1,22 @@
+[project]
+name = "finddoc"
+version = "0.1.0"
+description = "Document finder"
+requires-python = ">=3.10"
+dependencies = [
+    "pyperclip>=1.9.0",
+    "appdirs>=1.4.4",
+    "tomli>=2.2.1",
+    "tomli-w>=1.2.0",
+    "tqdm>=4.67.1",
+]
+
 [tool.ruff]
 line-length = 160
+
+[tool.poetry]
+package-mode = false
+
+
+[project.scripts]
+finddoc = "finddoc:main"

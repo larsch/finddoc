@@ -29,6 +29,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import traceback
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -44,15 +45,18 @@ RECORD_SEP = b"\x00"
 CACHE_DIR = Path(appdirs.user_cache_dir()) / "finddoc"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-IGNORE_RE = re.compile("\.(bkp|dtmp|part)$", re.IGNORECASE)
+IGNORE_RE = re.compile(r"\.(bkp|dtmp|part)$", re.IGNORECASE)
+
+roots = []
+opts = None
 
 
 def compressvars(path):
     shortest_path = path
     for var, value in os.environ.items():
         if path.startswith(value):
-            rest = path[len(value):]
-            candidate = f'%{var}%{rest}'
+            rest = path[len(value) :]
+            candidate = f"%{var}%{rest}"
             if len(candidate) < len(shortest_path):
                 shortest_path = candidate
     return shortest_path
@@ -68,8 +72,7 @@ def find_totalcmd():
 
 
 explorer_exe = shutil.which("explorer")
-totalcmd_exe = shutil.which("totalcmd64") or shutil.which(
-    "totalcmd") or find_totalcmd()
+totalcmd_exe = shutil.which("totalcmd64") or shutil.which("totalcmd") or find_totalcmd()
 
 
 def sanitize_text(text):
@@ -88,17 +91,22 @@ def start_thread(target, args=None):
     return thread
 
 
-def parallel_walk(base):
+def parallel_walk(base, stop_event):
     """Multithreaded version of os.walk"""
     jobs_created = 0
 
     def worker(jobs: queue.Queue, results: queue.Queue):
         nonlocal jobs_created
         while jobbase := jobs.get():
+            if stop_event.is_set():
+                results.put(None)
+                continue
             dirs = []
             nondirs = []
             try:
                 for entry in os.scandir(jobbase):
+                    if stop_event.is_set():
+                        break
                     if entry.is_dir():
                         dirs.append(entry.name)
                         jobs_created += 1
@@ -111,9 +119,7 @@ def parallel_walk(base):
 
     jobqueue = queue.Queue()
     resultqueue = queue.Queue()
-    threads = [
-        start_thread(worker, (jobqueue, resultqueue)) for _ in range(os.cpu_count())
-    ]
+    threads = [start_thread(worker, (jobqueue, resultqueue)) for _ in range(os.cpu_count() or 2)]
 
     # start the job for the root
     jobs_created += 1
@@ -134,9 +140,9 @@ def parallel_walk(base):
         thread.join()
 
 
-def walk(base, dst, alt_dst=None, progress=None):
+def walk(base, dst, stop_event, alt_dst=None, progress=None):
     """Walk directory and write paths to dst (and optionally alt_dst)"""
-    for root, _dirs, files in parallel_walk(base):
+    for root, _dirs, files in parallel_walk(base, stop_event):
         root = Path(root)
         if progress:
             progress.put(len(files))
@@ -146,9 +152,15 @@ def walk(base, dst, alt_dst=None, progress=None):
             if IGNORE_RE.search(str_path):
                 continue
             block = str_path.encode() + RECORD_SEP
-            dst.write(block)
+            try:
+                dst.write(block)
+            except OSError:
+                stop_event.set()
             if alt_dst:
-                alt_dst.write(block)
+                try:
+                    alt_dst.write(block)
+                except OSError:
+                    stop_event.set()
 
 
 def parse_path(path):
@@ -158,12 +170,12 @@ def parse_path(path):
     return path
 
 
-def rescan(root, progress):
+def rescan(root, progress, stop_event):
     digest = hashlib.sha256(root.encode()).hexdigest()
     list_path = CACHE_DIR / digest
     part_path = str(list_path) + ".part"
     with open(part_path, "wb") as outfile:
-        walk(root, outfile, progress=progress)
+        walk(root, outfile, stop_event=stop_event, progress=progress)
     os.replace(part_path, list_path)
 
 
@@ -176,7 +188,8 @@ def update():
     except (FileNotFoundError, ValueError):
         total_count = 10000
 
-    threads = [start_thread(rescan, (root, progress_queue)) for root in roots]
+    stop_event = threading.Event()
+    threads = [start_thread(rescan, (root, progress_queue, stop_event)) for root in roots]
 
     def progress():
         total = 0
@@ -205,7 +218,7 @@ def update():
         outfile.write(str(total_count))
 
 
-def cached_walk(root, io):
+def cached_walk(root, io, stop_event):
     """
     Walk directory tree and write nul-separated paths to `io`. Caches result in
     `CACHE_DIR`.
@@ -214,33 +227,42 @@ def cached_walk(root, io):
     cache_path = CACHE_DIR / digest
     try:
         with open(cache_path, "rb") as infile:
-            shutil.copyfileobj(infile, io)
+            try:
+                shutil.copyfileobj(infile, io)
+            except OSError:
+                stop_event.set()
     except FileNotFoundError:
         part = str(cache_path) + ".part"
         with open(part, "wb") as part_fileout:
-            walk(root, io, part_fileout)
+            walk(root, io, stop_event, part_fileout)
         os.replace(part, cache_path)
 
 
-def fzf(opts):
+def fzf(opts, extended=False):
     history_path = CACHE_DIR / "history"
     fzf_command = shutil.which("fzf")
     if not fzf_command:
-        print(
-            "fzf is needed and was not found path. Download from https://github.com/junegunn/fzf/releases"
-        )
+        print("fzf is needed and was not found path. Download from https://github.com/junegunn/fzf/releases")
         exit(1)
 
-    expect = "alt-u,alt-c,alt-e"
+    expect = "alt-u,alt-c,alt-e,alt-x"
     if totalcmd_exe:
         expect = expect + ",alt-o"
 
-    header = "enter=open, alt-c=copy path, alt-e=show in explorer, ctrl+p/n=history, alt-u=update, esc=abort"
+    if extended:
+        extended_bind = "normal"
+    else:
+        extended_bind = "extended"
+    header = f"enter=open, alt-c=copy path, alt-e=show in explorer, ctrl+p/n=history, alt-u=update, alt-x={extended_bind}, esc=abort"
     if totalcmd_exe:
         header += ", alt-o=show in totalcmd"
 
+    if extended:
+        header += "\nextended-search: 'exact ^prefix suffix$ !inverse !^inverseprefix !inversesuffix$"
+
     command = [
         fzf_command,
+        "-i",
         "--expect",
         expect,
         "--print0",
@@ -252,9 +274,14 @@ def fzf(opts):
         history_path,
         "--header",
         header,
+        # "--scheme=path",
         "--bind",
         "shift-up:preview-page-up,shift-down:preview-page-down",
     ]
+
+    if extended:
+        command.append("--extended")
+
     if opts.preview:
         command.extend(
             [
@@ -265,29 +292,31 @@ def fzf(opts):
             ]
         )
 
-    proc = subprocess.Popen(
-        command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     try:
-        try:
-            for root in roots:
-                cached_walk(root, proc.stdin)
-            proc.stdin.close()
-        except (BrokenPipeError, OSError):
-            pass
-        if output := proc.stdout.read():
+        stop_event = threading.Event()
+        writer_thread = threading.Thread(target=write_paths_to_process, args=(opts, proc, stop_event))
+        writer_thread.start()
+        output = proc.stdout.read()
+        stop_event.set()
+        writer_thread.join()
+        if output:
             key, path, _ = output.split(RECORD_SEP)
+            path = Path(path.decode())
             if key == b"":
-                os.startfile(path.decode())
+                os.startfile(str(path))
             elif key == b"alt-c":
-                pyperclip.copy(path.decode())
+                pyperclip.copy(str(path))
             elif key == b"alt-e":
-                os.system(f'explorer.exe /select,"{path.decode()}"')
+                os.system(f'explorer.exe /select,"{str(path.resolve())}"')
             elif key == b"alt-o":
-                subprocess.call((totalcmd_exe, "/a", "/o", path.decode()))
+                subprocess.call((str(totalcmd_exe), "/a", "/o", str(path.resolve())))
             elif key == b"alt-u":
                 update()
                 return fzf(opts)
+            elif key == b"alt-x":
+                return fzf(opts, not extended)
 
     finally:
         try:
@@ -297,15 +326,31 @@ def fzf(opts):
         proc.stdout.close()
 
 
+def write_paths_to_process(opts, proc, stop_event):
+    try:
+        if opts.directory:
+            walk(opts.directory, proc.stdin, stop_event)
+        else:
+            for root in roots:
+                if stop_event.is_set():
+                    break
+                cached_walk(root, proc.stdin, stop_event)
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    except (BrokenPipeError, OSError):
+        traceback.print_exc()
+        pass
+
+
 def preview(path):
     """Preview a file. Not very good."""
     _path, ext = os.path.splitext(path)
     if ext in (".doc",):
         command = shutil.which("catdoc")
         if command:
-            output = subprocess.check_output(
-                (command, "-s", "8859-1", path), cwd=os.path.dirname(command)
-            )
+            output = subprocess.check_output((command, "-s", "8859-1", path), cwd=os.path.dirname(command))
             print(sanitize_text(output.decode(encoding="iso-8859-1")))
         else:
             print(".doc preview requires catdoc.exe")
@@ -316,9 +361,7 @@ def preview(path):
         word.visible = False
         word.Documents.Open(path)
         doc = word.ActiveDocument
-        text = (
-            doc.Range().Text.replace("\x01", "").replace("\x07", "").replace("\r", "\n")
-        )
+        text = doc.Range().Text.replace("\x01", "").replace("\x07", "").replace("\r", "\n")
         text = re.sub("([ \t+]*\n){3,}", "\n", text)
         doc.Close()
         print(text.strip())
@@ -328,8 +371,11 @@ def preview(path):
 
 @contextmanager
 def edit_config():
-    with open(opts.config, "rb") as infile:
-        config = tomli.load(infile)
+    try:
+        with open(opts.config, "rb") as infile:
+            config = tomli.load(infile)
+    except FileNotFoundError:
+        config = {"finddoc": {"paths": []}}
     yield config
     part_config = opts.config + ".part"
     with open(part_config, "wb") as outfile:
@@ -343,10 +389,10 @@ def listdirs():
         print(root)
 
 
-def add(path):
+def add(opts, path):
     absolute_path = Path(path).absolute()
     add_path = compressvars(str(absolute_path))
-    with edit_config() as config:
+    with edit_config(opts) as config:
         config["finddoc"]["paths"].append(add_path)
         print(f"Added '{add_path}' to list")
 
@@ -362,27 +408,26 @@ def remove(path):
         return is_keeeper
 
     with edit_config() as config:
-        config["finddoc"]["paths"] = list(
-            filter(keep_path, config["finddoc"]["paths"]))
+        config["finddoc"]["paths"] = list(filter(keep_path, config["finddoc"]["paths"]))
 
 
-if __name__ == "__main__":
+def main():
+    global roots, opts
     parser = argparse.ArgumentParser()
-    default_config = os.path.join(
-        appdirs.user_config_dir(), "finddoc", "finddoc.toml")
-    parser.add_argument("--preview", action="store_const",
-                        const=True, default=False)
-    parser.add_argument("--config", default=default_config,
-                        help=f"Path to config file (default: {default_config})")
+    parser.set_defaults(directory=None)
+    default_config = os.path.join(appdirs.user_config_dir(), "finddoc", "finddoc.toml")
+    parser.add_argument("--preview", action="store_const", const=True, default=False)
+    parser.add_argument("--config", default=default_config, help=f"Path to config file (default: {default_config})")
 
     subs = parser.add_subparsers()
     subs.dest = "command"
     subs.default = "find"
     preview_parser = subs.add_parser("preview", help="Preview file")
     preview_parser.add_argument("file")
-    update_parser = subs.add_parser("update", help="Update directory caches")
+    _update_parser = subs.add_parser("update", help="Update directory caches")
     find_parser = subs.add_parser("find", help="Find files (default)")
-    list_parser = subs.add_parser("list", help="List included directories")
+    find_parser.add_argument("directory", nargs="?", help="Directory to search (overrides config)", default="x")
+    _list_parser = subs.add_parser("list", help="List included directories")
 
     add_parser = subs.add_parser("add", help="Add path to search tree")
     add_parser.add_argument("path", help="Path to scan for files")
@@ -392,8 +437,11 @@ if __name__ == "__main__":
 
     opts = parser.parse_args()
 
-    with open(opts.config, "rb") as infile:
-        config = tomli.load(infile)
+    try:
+        with open(opts.config, "rb") as infile:
+            config = tomli.load(infile)
+    except FileNotFoundError:
+        config = {"finddoc": {"paths": []}}
     roots = [parse_path(path) for path in config["finddoc"]["paths"]]
 
     if opts.command == "list":
@@ -405,6 +453,10 @@ if __name__ == "__main__":
     elif opts.command == "update":
         update()
     elif opts.command == "add":
-        add(opts.path)
+        add(opts, opts.path)
     elif opts.command == "remove":
         remove(opts.path)
+
+
+if __name__ == "__main__":
+    main()
