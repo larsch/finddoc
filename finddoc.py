@@ -52,6 +52,9 @@ opts = None
 
 
 def compressvars(path):
+    """
+    Replace longest matching environment variable prefix in path with %VAR%
+    """
     shortest_path = path
     for var, value in os.environ.items():
         if path.startswith(value):
@@ -370,7 +373,7 @@ def preview(path):
 
 
 @contextmanager
-def edit_config():
+def edit_config(opts):
     try:
         with open(opts.config, "rb") as infile:
             config = tomli.load(infile)
@@ -390,14 +393,17 @@ def listdirs():
 
 
 def add(opts, path):
-    absolute_path = Path(path).absolute()
-    add_path = compressvars(str(absolute_path))
+    path = Path(path).absolute()
+    add_path = compressvars(str(path))
     with edit_config(opts) as config:
+        if any(Path(parse_path(p)).absolute() == path for p in config["finddoc"]["paths"]):
+            print(f"Path '{add_path}' is already in list")
+            return
         config["finddoc"]["paths"].append(add_path)
         print(f"Added '{add_path}' to list")
 
 
-def remove(path):
+def remove(opts, path):
     absolute_path = Path(path).absolute()
     findpath = compressvars(str(absolute_path))
 
@@ -407,7 +413,7 @@ def remove(path):
             print(f"Removed '{findpath}' from list")
         return is_keeeper
 
-    with edit_config() as config:
+    with edit_config(opts) as config:
         config["finddoc"]["paths"] = list(filter(keep_path, config["finddoc"]["paths"]))
 
 
@@ -455,7 +461,7 @@ def main():
     elif opts.command == "add":
         add(opts, opts.path)
     elif opts.command == "remove":
-        remove(opts.path)
+        remove(opts, opts.path)
 
 
 if __name__ == "__main__":
