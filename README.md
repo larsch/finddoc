@@ -1,64 +1,82 @@
-# finddoc.py
+# finddoc
 
-`finddoc.py` is CLI tool that makes it easy and very fast to search and open
-files on Windows when multiple project/document folders need to be searched.
-Intended use is environments where the user may have personal Documents,
-OneDrive, other folders, and network shares where documents (and other files)
-are located. It handleds hundreds of thousands of file paths with ease.
+Fast fuzzy document finder for Windows across multiple configured roots.
 
-Uses [fzf](https://github.com/junegunn/fzf) for the UI, and extends it with
-support for multiple sources (not just one directory) and shortcuts for opening
-a file with it's default association (<kbd>ENTER</kbd>), copying path to
-clipboard (<kbd>alt-c</kbd>), and going to the file in explorer
-(<kbd>alt-e</kbd>).
+`finddoc` is a CLI tool for searching and opening files across personal folders, OneDrive locations, project directories, and network shares. It is designed for large path sets and uses [fzf](https://github.com/junegunn/fzf) for interactive selection.
+
+## Features
+
+- Search across multiple configured roots
+- Open files with their default Windows association
+- Copy selected file paths to the clipboard
+- Reveal files in Explorer
+- Optionally reveal files in Total Commander
+- Cache scanned file lists for fast subsequent searches
+
+## Installation
+
+```powershell
+uv sync
+```
+
+Ensure `fzf` is installed and available on `PATH`.
 
 ## Usage
 
 ### Interactively search for files
 
-```
-C:\> finddoc.py
-```
-
-### Shortcuts available when searching:
-
- * <kbd>ENTER</kbd> - open selected file (default associated program)
- * <kbd>alt-c</kbd> - copy full path to clipboard
- * <kbd>alt-e</kbd> - open Explorer with file selected
- * <kbd>alt-o</kbd> - open Total Commander with file selected
- * <kbd>alt-u</kbd> - update document cache (rescan all locations)
- * <kbd>ctrl-p/ctrl-n</kbd> - navigate history
- * additional standard fzf shortcuts work too
-
-
-### Adding/removing directories
-
-To add a path:
-
-```bat
-finddoc add <PATH>
+```powershell
+uv run finddoc
 ```
 
-For example, to add current path:
+### Search a specific directory
 
-```bat
-C:\MyProjects\Documents> finddoc add .
+```powershell
+uv run finddoc find C:\path\to\search
 ```
 
-And to remote path:
+### Update the cache
 
-```bat
-finddoc remove <PATH>
+```powershell
+uv run finddoc update
 ```
 
-`finddoc.py` will expand and normalize the argument, so relative paths will be handled correctly.
+### List configured directories
 
+```powershell
+uv run finddoc list
+```
 
-### Configure directories
+### Add a directory
 
-The configuration file is in TOML format and must be placed in `%LOCALAPPDATA%\finddoc\finddoc.toml`.
+```powershell
+uv run finddoc add C:\path\to\include
+```
 
-Example (TOML format):
+### Remove a directory
+
+```powershell
+uv run finddoc remove C:\path\to\include
+```
+
+## Search shortcuts
+
+- `Enter` — open selected file
+- `Alt+C` — copy full path to clipboard
+- `Alt+E` — open Explorer with file selected
+- `Alt+O` — open Total Commander with file selected
+- `Alt+U` — update document cache
+- `Ctrl+P` / `Ctrl+N` — navigate history
+
+## Configuration
+
+The configuration file is stored at:
+
+```text
+%LOCALAPPDATA%\finddoc\finddoc.toml
+```
+
+Example:
 
 ```toml
 [finddoc]
@@ -67,21 +85,5 @@ paths = [
     "%ONEDRIVE%\\Documents",
     "P:\\Projects\\Fuschia\\Documents",
     "P:\\Projects\\WhiteGold\\Documents",
-    "P:\\Guides\\Deployment",
-    ...
 ]
-```
-
-### Update cache
-
-To refresh directory caches:
-
-```
-C:\> finddoc.py update
-```
-
-### List directories
-
-```
-C:\> finddoc.py list
 ```

@@ -2,11 +2,11 @@
 Fuzzy find files in multiple paths on Windows using fzf.
 
 - Files searched are listed in configfile (%LOCALAPPDATA%\finddoc\finddoc.toml)
-- File lists are cached (use finddoc.py --update to refresh)
+- File lists are cached (use finddoc --update to refresh)
 
 Dependencies:
 
-    pip install pyperclip appdirs
+    uv sync
 
     fzf from https://github.com/junegunn/fzf/releases
 
@@ -186,7 +186,7 @@ def update():
     progress_queue = queue.Queue()
 
     try:
-        with open(CACHE_DIR / "files", "r") as infile:
+        with open(CACHE_DIR / "files") as infile:
             total_count = int(infile.read())
     except (FileNotFoundError, ValueError):
         total_count = 10000
@@ -358,7 +358,11 @@ def preview(path):
         else:
             print(".doc preview requires catdoc.exe")
     elif ext in (".doc", ".docx"):
-        import win32com.client
+        try:
+            import win32com.client
+        except ImportError:
+            print(".doc/.docx preview requires pywin32")
+            return
 
         word = win32com.client.Dispatch("Word.Application")
         word.visible = False

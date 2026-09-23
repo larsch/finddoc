@@ -1,22 +1,92 @@
 [project]
 name = "finddoc"
-version = "0.1.0"
-description = "Document finder"
+dynamic = ["version"]
+description = "Fast fuzzy document finder for Windows across multiple configured roots"
+readme = "README.md"
+authors = [
+    { name = "Lars Christensen", email = "lac@rtx.dk" },
+]
 requires-python = ">=3.10"
 dependencies = [
-    "pyperclip>=1.9.0",
     "appdirs>=1.4.4",
+    "pyperclip>=1.9.0",
     "tomli>=2.2.1",
     "tomli-w>=1.2.0",
     "tqdm>=4.67.1",
 ]
 
+[project.scripts]
+finddoc = "finddoc.cli:main"
+
+[dependency-groups]
+test = [
+    "pytest>=9.0.1,<10.0.0",
+]
+lint = [
+    "ruff>=0.12.10,<1.0.0",
+    "pylint>=4.0.4,<5.0.0",
+]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    "tox>=4.32.0,<5.0.0",
+]
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
 [tool.ruff]
 line-length = 160
 
-[tool.poetry]
-package-mode = false
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+ignore = ["SIM105", "SIM108"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
 
-[project.scripts]
-finddoc = "finddoc:main"
+[tool.pylint]
+max-line-length = 160
+ignore = ["docs"]
+disable = "all"
+enable = "E"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.tox]
+env_list = ["py310", "py311", "py312", "py313", "lint"]
+
+[tool.tox.env_run_base]
+description = "Run the test suite"
+package = "editable"
+dependency_groups = ["test"]
+commands = [
+    ["pytest", "--maxfail=1"],
+]
+
+[tool.tox.env.lint]
+description = "Run ruff check and format, then pylint"
+package = "editable"
+dependency_groups = ["lint"]
+commands = [
+    ["ruff", "check", "finddoc", "tests"],
+    ["ruff", "format", "--check", "finddoc", "tests"],
+    ["pylint", "finddoc"],
+]
+
+[[tool.uv.index]]
+name = "staging"
+url = "https://pypi.rtx.net/main/staging/+simple/"
+publish-url = "https://pypi.rtx.net/main/staging/"
+explicit = true
+
+[[tool.uv.index]]
+name = "stable"
+url = "https://pypi.rtx.net/main/stable/+simple/"
+publish-url = "https://pypi.rtx.net/main/stable/"
+explicit = true
